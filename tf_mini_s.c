@@ -8,6 +8,8 @@
 #define TF_FRAME_PAYLOAD_SIZE (6U)
 #define TF_FRAME_START_BYTE (0x59)
 
+#define TF_COMMAND_FRAME_ATTEMPTS (3U)
+
 union tf_mini_s_rxdata {
     uint8_t arr[TF_FRAME_PAYLOAD_SIZE];
     struct {
@@ -24,30 +26,6 @@ static tfminis_ret_t check_args(tfminis_dev_t *dev)
         !dev->ll->stop_dma_or_irq_operations || \
         !dev->ll->start_dma_or_irq_operations) {
         return TFMINIS_WRONG_ARGS;
-    }
-
-    return TFMINIS_OK;
-}
-
-static tfminis_ret_t system_reset(tfminis_dev_t *dev)
-{
-    int ret = 0;
-    uint8_t command[4] = { 0x5A, 0x04, 0x02, 0x60 };
-    uint8_t response[5] = { 0 };
-
-    ret = dev->ll->uart_send(command, sizeof(command));
-    ret |= dev->ll->uart_recv(response, sizeof(response));
-
-    if (ret) {
-        return TFMINIS_INTERF_ERR;
-    }
-
-    if (response[0] != 0x5A || response[1] != 0x05 || response[2] != 0x02) {
-        return TFMINIS_WRONG_RESPONSE;
-    }
-
-    if (response[3] != 0x00 || response[4] != 0x60) {
-        return TFMINIS_FAIL_SW_RESET;
     }
 
     return TFMINIS_OK;
@@ -72,34 +50,33 @@ tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
         return TFMINIS_WRONG_ARGS;
     }
 
+    /* delay after power up to wait the sensor init process */
+    dev->ll->delay_ms(1000);
+
     /* Stop data obtaining to use polling to setup the sensor */
     if (dev->ll->stop_dma_or_irq_operations()) {
         return TFMINIS_INTERF_ERR;
     }
-    dev->ll->delay_ms(10);
 
-    ret = system_reset(dev);
-    if (ret != TFMINIS_OK) {
-        return ret;
-    }
-    dev->ll->delay_ms(1000);
-
-    /* Disable data output. Call command one more times to prevent previous data frame reading */
+    /* Set frame rate to 0 to stop data frames */
     {
-        uint8_t command[] = { 0x5A, 0x05, 0x07, 0x00, 0x66 };
+        int attempts = 0; /* try to send it several times to prevent intervention of previous data frame */
+        uint8_t command[] = { 0x5A, 0x06, 0x03, 0x00, 0x00, 0x63 };
         uint8_t response[sizeof(command)] = { 0 };
 
-        ret = dev->ll->uart_send(command, sizeof(command));
-        ret |= dev->ll->uart_recv(response, sizeof(response));
-        dev->ll->delay_ms(20);
-        ret |= dev->ll->uart_send(command, sizeof(command));
-        ret |= dev->ll->uart_recv(response, sizeof(response));
-        if (ret) {
-            return TFMINIS_INTERF_ERR;
-        }
+        while (attempts++ < TF_COMMAND_FRAME_ATTEMPTS) {
+            ret = dev->ll->uart_send(command, sizeof(command));
+            ret |= dev->ll->uart_recv(response, sizeof(response));
 
-        if (memcmp(command, response, sizeof(command)) != 0) {
-            return TFMINIS_WRONG_RESPONSE;
+            if (ret && (attempts == TF_COMMAND_FRAME_ATTEMPTS)) {
+                return TFMINIS_INTERF_ERR;
+            } else if ((memcmp(command, response, sizeof(command)) != 0) && (attempts == TF_COMMAND_FRAME_ATTEMPTS)) {
+                return TFMINIS_WRONG_RESPONSE;
+            } else {
+                break;
+            }
+
+            dev->ll->delay_ms(20);
         }
     }
 
@@ -126,9 +103,6 @@ tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
 
         /* [3]=V1, [4]=V2, [5]=V3 */
         dev->fw_version = (uint32_t)response[5] | ((uint32_t)response[4] << 8) | ((uint32_t)response[3] << 16);
-#if (TFMINIS_DEBUG_MODE_LOGGING == 1)
-    tfminis_debug_logger_func("[TFmini-S] FW version is V%d.%d.%d\n", response[5], response[4], response[3]);
-#endif
     }
 
     /* Enable data frames output */

@@ -24,10 +24,6 @@ extern "C" {
 #define TFMINIS_OPERATING_RANGE_MIN_CM (10U)
 #define TFMINIS_OPERATING_RANGE_MAX_CM (1200U)
 
-#if (TFMINIS_DEBUG_MODE_LOGGING == 1)
-# define tfminis_debug_logger_func(...) "place your logger function here; For instance: printf(__VA_ARGS__)"
-#endif
-
 typedef enum {
     TFMINIS_OK,
     TFMINIS_FAIL,
