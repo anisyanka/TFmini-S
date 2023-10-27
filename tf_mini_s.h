@@ -21,9 +21,23 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 
+#define TFMINIS_OPERATING_RANGE_MIN_CM (10U)
+#define TFMINIS_OPERATING_RANGE_MAX_CM (1200U)
+
+#if (TFMINIS_DEBUG_MODE_LOGGING == 1)
+# define tfminis_debug_logger_func(...) "place your logger function here; For instance: printf(__VA_ARGS__)"
+#endif
+
 typedef enum {
     TFMINIS_OK,
-    TFMINIS_FAIL
+    TFMINIS_FAIL,
+
+    /* spectial error codes */
+    TFMINIS_INTERF_ERR,
+    TFMINIS_WRONG_ARGS,
+    TFMINIS_WRONG_RESPONSE,
+    TFMINIS_WRONG_CRC,
+    TFMINIS_FAIL_SW_RESET,
 } tfminis_ret_t;
 
 typedef enum {
@@ -32,6 +46,7 @@ typedef enum {
 } tfminis_interfaces_t;
 
 typedef enum {
+    TFMINIS_DATA_IS_VALID, /* everything is alright */
     TFMINIS_TOO_FAR_TARGET, /* distance more than max operating range */
     TFMINIS_TOO_CLOSE_TARGET, /* distance less than min operating range */
     TFMINIS_AMBIENT_LIGHT_SATURATION,
@@ -42,25 +57,25 @@ typedef struct {
     /* Millisecond software delay */
     void (*delay_ms)(uint32_t ms);
 
-    /*
-     * Send data in polling mode.
-     * Must return 1 in case of success.
+    /* Send data in POLLING mode.
+     * Must return 0 in case of success.
      * 
-     * This function is used by driver ONLY to send commands frame to TFmini-S
-     **/
+     * This function is used by driver ONLY to send commands frame to TFmini-S.
+     * Obtatinig data frames has to stop to send/recv cmd data to/from TFmini-S **/
     int (*uart_send)(uint8_t *data, size_t len);
 
-    /*
-     * Receive data in polling mode.
-     * Must return 1 in case of success.
+    /* Receive data in POLLING mode.
+     * Must return 0 in case of success.
      * 
      * This function is used by driver ONLY to receive responce for commands.
-     * For data frame receiving setup DMA or interrupt for your chip on call
-     * 
-     **/
+     * For data frame receiving setup DMA or uart interrupt for your chip **/
     int (*uart_recv)(uint8_t *data, size_t len);
 
-    uint32_t (*crc32)(uint8_t *data, size_t len);
+    /* Enable/disable whatever you use to asynchronously receive data. DMA or UART IRQ.
+     * It is needed to setup TFmidi-S with some commands in polling mode.
+     Must return 0 in case of success. */
+    int (*start_dma_or_irq_operations)(void);
+    int (*stop_dma_or_irq_operations)(void);
 } tfminis_ll_t;
 
 typedef struct {
@@ -81,30 +96,43 @@ typedef struct {
 } tfminis_dist_t;
 
 typedef struct {
+    uint32_t fw_version;
     tfminis_ll_t *ll; /* Low Level functions which must be implemented by user */
-    tfminis_interfaces_t interface;
+    tfminis_interfaces_t interface_type;
     tfminis_dist_t dist;
-    uint16_t temperature;
+    uint16_t temperature_c; /* Degree Celsius */
 } tfminis_dev_t;
 
-/* Fill in dev->ll with appropriate functions before call */
+/* Fill in dev->ll with appropriate functions before call.
+ * Default setup is:
+ *  - out enable
+ *  - 115200 baud
+ *  - format is standard 9 bytes(cm)
+ *  - 100Hz output frame
+ *  - strength Threshold = 100
+ * FW version of TFmini-S is placed to dev->fw_version
+ **/
 tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf);
 
-/* The function will put sensor's limits to the passed pointers. Values will be in cm */
-tfminis_ret_t tfminis_get_operating_range(tfminis_dev_t *dev, uint16_t *min_cm, uint16_t *max_cm);
-
-/*
- * Obtain distance data
- * If returns TFMINIS_FAIL, check the reason with the help of tfminis_get_err_reason() 
- */
+/* Obtain distance data.
+ * If returns TFMINIS_FAIL, check the reason with the help of tfminis_get_err_reason() */
 tfminis_dist_t tfminis_get_distance(tfminis_dev_t *dev);
 tfminis_dist_error_reason_t tfminis_get_err_reason(tfminis_dev_t *dev);
 
-/* Returns last successfully obtained TFmini-S chip temperature */
+/* Returns last obtained TFmini-S chip temperature.  */
 uint16_t tfminis_get_chip_temp(tfminis_dev_t *dev);
+
+/* How often you want to obtain frames? (0 - 1000 Hz).
+ * Remember the higher frame rate the higher interface speed required. (baudrate in case of UART)
+ *
+ * 0Hz means that you have to manually use tfminis_trigger_detection() func by itselt to obtain distanse.
+ * You must disable async data receiving (DMA or UART interrupts), because TFmini-S for now 
+ * will send data onlu after triggering */
+tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev);
+tfminis_ret_t tfminis_trigger_detection(tfminis_dev_t *dev, tfminis_dist_t *return_dist);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // __TF_MINI_S_H
+#endif  /* __TF_MINI_S_H */
