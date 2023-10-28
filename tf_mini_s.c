@@ -137,22 +137,6 @@ tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
         }
     }
 
-    // /* Enable data frames output */
-    // {
-    //     uint8_t command[] = { 0x5A, 0x05, 0x07, 0x01, 0x67 };
-    //     uint8_t response[sizeof(command)] = { 0 };
-
-    //     ret = dev->ll->uart_send(command, sizeof(command));
-    //     ret |= dev->ll->uart_recv(response, sizeof(response));
-    //     if (ret) {
-    //         return TFMINIS_INTERF_ERR;
-    //     }
-
-    //     if (memcmp(command, response, sizeof(command)) != 0) {
-    //         return TFMINIS_WRONG_RESPONSE;
-    //     }
-    // }
-
     /* Start data obtaining in async mode */
     if (dev->ll->start_dma_or_irq_operations()) {
         return TFMINIS_FAIL;
@@ -168,12 +152,12 @@ tfminis_dist_t tfminis_get_distance(tfminis_dev_t *dev)
 
 tfminis_dist_error_reason_t tfminis_get_err_reason(tfminis_dev_t *dev)
 {
-    return TFMINIS_OK;
+    return dev->dist.err_reason;
 }
 
 uint16_t tfminis_get_chip_temp(tfminis_dev_t *dev)
 {
-    return TFMINIS_OK;
+    return dev->temperature_c;
 }
 
 tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev, uint16_t frame_rate)
