@@ -6,7 +6,9 @@
 
 #define TF_FRAME_SIZE (9U)
 #define TF_FRAME_PAYLOAD_SIZE (6U)
+#define TF_FRAME_CRC_SIZE (1U)
 #define TF_FRAME_START_BYTE (0x59)
+#define TF_FRAME_START_BYTES_CNT (2)
 
 #define TF_COMMAND_FRAME_ATTEMPTS (3U)
 
@@ -21,11 +23,12 @@
 #define TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF (655) /* 1/(100/65530) */
 
 union tf_mini_s_rxdata {
-    uint8_t arr[TF_FRAME_PAYLOAD_SIZE];
+    uint8_t arr[TF_FRAME_PAYLOAD_SIZE + TF_FRAME_CRC_SIZE];
     struct {
         uint16_t distance;
         uint16_t strength;
         uint16_t raw_temp;
+        uint8_t crc;
     } fields;
 };
 
@@ -166,11 +169,18 @@ tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *r
     uint8_t command[4] = { 0x5A, 0x04, 0x04, 0x62 };
     uint8_t response[TF_FRAME_SIZE] = { 0 };
     uint8_t crc = 0;
-    uint16_t distanse = 0;
+    uint16_t distance = 0;
     uint16_t strength = 0;
 
     ret = dev->ll->uart_send(command, sizeof(command));
     ret |= dev->ll->uart_recv(response, sizeof(response));
+
+    distance = (uint16_t)response[3] << 8 | response[2];
+    strength = (uint16_t)response[5] << 8 | response[4];
+    dev->temperature_c = (((uint16_t)response[7] << 8 | response[6]) / 8 - 256);
+
+    return_dist->distance_cm = distance;
+    return_dist->probability = 0;
 
     if (ret) {
         return_dist->err_reason = TFMINIS_INTF_ERR;
@@ -188,34 +198,147 @@ tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *r
         return TFMINIS_FAIL;
     }
 
-    distanse = (uint16_t)response[3] << 8 | response[2];
-    strength = (uint16_t)response[5] << 8 | response[4];
-    dev->temperature_c = (((uint16_t)response[7] << 8 | response[6]) / 8 - 256);
-
-    return_dist->distance_cm = distanse;
-    return_dist->err_reason = TFMINIS_DATA_IS_VALID;
-    return_dist->probability = (strength / TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF) + 1;
-
     /* distance more than max operating range */
-    if (distanse == TF_DIST_TARGET_TOO_FAR && strength < TF_STRENGHT_TARGET_TOO_FAR) {
-        return_dist->probability = 0;
+    if (distance == TF_DIST_TARGET_TOO_FAR && strength < TF_STRENGHT_TARGET_TOO_FAR) {
         return_dist->err_reason = TFMINIS_TOO_FAR_TARGET;
         return TFMINIS_FAIL;
     }
 
     /* distance less than min operating range */
-    if (distanse == TF_DIST_TARGET_TOO_CLOSE && strength == TF_STRENGHT_TARGET_TOO_CLOSE) {
-        return_dist->probability = 0;
+    if (distance == TF_DIST_TARGET_TOO_CLOSE && strength == TF_STRENGHT_TARGET_TOO_CLOSE) {
         return_dist->err_reason = TFMINIS_TOO_CLOSE_TARGET;
         return TFMINIS_FAIL;
     }
 
     /* too much ambient light */
-    if (distanse == TF_DIST_AMBIENT_SATURATION) {
-        return_dist->probability = 0;
+    if (distance == TF_DIST_AMBIENT_SATURATION) {
         return_dist->err_reason = TFMINIS_TOO_CLOSE_TARGET;
         return TFMINIS_FAIL;
     }
 
+    return_dist->err_reason = TFMINIS_DATA_IS_VALID;
+    return_dist->probability = (strength / TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF) + 1;
+
     return TFMINIS_OK;
+}
+
+typedef enum {
+    WAIT_FOR_SOF,
+    WAIT_FOR_DIST_L,
+    WAIT_FOR_DIST_H,
+    WAIT_FOR_STRENGTH_L,
+    WAIT_FOR_STRENGTH_H,
+    WAIT_FOR_TEMP_L,
+    WAIT_FOR_TEMP_H,
+    WAIT_FOR_CRC,
+} parser_state_t;
+
+static void fill_dist_data_based(tfminis_dev_t *dev, uint16_t distance, uint16_t strength)
+{
+    dev->dist.distance_cm = distance;
+    dev->dist.probability = 0;
+
+    /* distance more than max operating range */
+    if (distance == TF_DIST_TARGET_TOO_FAR && strength < TF_STRENGHT_TARGET_TOO_FAR) {
+        dev->dist.err_reason = TFMINIS_TOO_FAR_TARGET;
+        return;
+    }
+
+    /* distance less than min operating range */
+    if (distance == TF_DIST_TARGET_TOO_CLOSE && strength == TF_STRENGHT_TARGET_TOO_CLOSE) {
+        dev->dist.err_reason = TFMINIS_TOO_CLOSE_TARGET;
+        return;
+    }
+
+    /* too much ambient light */
+    if (distance == TF_DIST_AMBIENT_SATURATION) {
+        dev->dist.err_reason = TFMINIS_TOO_CLOSE_TARGET;
+        return;
+    }
+
+    dev->dist.err_reason = TFMINIS_DATA_IS_VALID;
+    dev->dist.probability = (strength / TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF) + 1;
+}
+
+void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
+{
+    static union tf_mini_s_rxdata rxdata;
+    static int cur_byte_idx = 0;
+    static int sof_cnt = 0;
+    static parser_state_t parser_state = WAIT_FOR_SOF;
+    static uint8_t crc = 0;
+
+    /* Detect start of frame */
+    if (byte == TF_FRAME_START_BYTE && parser_state == WAIT_FOR_SOF) {
+        ++sof_cnt;
+
+        if (sof_cnt == TF_FRAME_START_BYTES_CNT) {
+            crc += TF_FRAME_START_BYTE;
+            crc += TF_FRAME_START_BYTE;
+            parser_state = WAIT_FOR_DIST_L;
+        }
+        return;
+    }
+
+    /* If we got here we received TF_FRAME_START_BYTE one times. It means frame is broken */
+    if (sof_cnt == TF_FRAME_START_BYTES_CNT - 1) {
+        crc = 0;
+        cur_byte_idx = 0;
+        sof_cnt = 0;
+        parser_state = WAIT_FOR_SOF;
+        return;
+    }
+
+    /* save usefull data */
+    switch (parser_state) {
+    case WAIT_FOR_DIST_L:
+        crc += byte;
+        rxdata.arr[cur_byte_idx++] = byte;
+        parser_state = WAIT_FOR_DIST_H;
+        break;
+    case WAIT_FOR_DIST_H:
+        crc += byte;
+        rxdata.arr[cur_byte_idx++] = byte;
+        parser_state = WAIT_FOR_STRENGTH_L;
+        break;
+    case WAIT_FOR_STRENGTH_L:
+        crc += byte;
+        rxdata.arr[cur_byte_idx++] = byte;
+        parser_state = WAIT_FOR_STRENGTH_H;
+        break;
+    case WAIT_FOR_STRENGTH_H:
+        crc += byte;
+        rxdata.arr[cur_byte_idx++] = byte;
+        fill_dist_data_based(dev, rxdata.fields.distance, rxdata.fields.strength);
+        parser_state = WAIT_FOR_TEMP_L;
+        break;
+    case WAIT_FOR_TEMP_L:
+        crc += byte;
+        rxdata.arr[cur_byte_idx++] = byte;
+        parser_state = WAIT_FOR_TEMP_H;
+        break;
+    case WAIT_FOR_TEMP_H:
+        crc += byte;
+        rxdata.arr[cur_byte_idx++] = byte;
+        dev->temperature_c = (rxdata.fields.raw_temp / 8) - 256;
+        parser_state = WAIT_FOR_CRC;
+        break;
+    case WAIT_FOR_CRC:
+        rxdata.arr[cur_byte_idx++] = byte;
+        if (crc != byte) {
+            dev->dist.err_reason = TFMINIS_CRC_FAILED;
+            dev->dist.probability = 0;
+        }
+        break;
+    default:
+        break;
+    }
+
+    /* Obtained whole frame or prevent rx buffer overflow in case of broken frames */
+    if (cur_byte_idx > sizeof(rxdata.arr) - 1) {
+        crc = 0;
+        cur_byte_idx = 0;
+        sof_cnt = 0;
+        parser_state = WAIT_FOR_SOF;
+    }
 }

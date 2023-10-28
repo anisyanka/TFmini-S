@@ -24,6 +24,11 @@ extern "C" {
 #define TFMINIS_OPERATING_RANGE_MIN_CM (10U)
 #define TFMINIS_OPERATING_RANGE_MAX_CM (1200U)
 
+/* Count of TFmini-S sensor in your setup. Used to parse data from several devices */
+#ifndef TFMINIS_DEVICES_IN_SYSTEM
+ #define TFMINIS_DEVICES_IN_SYSTEM 1
+#endif
+
 typedef enum {
     TFMINIS_OK,
     TFMINIS_FAIL,
@@ -71,7 +76,7 @@ typedef struct {
 
     /* Enable/disable whatever you use to asynchronously receive data. DMA or UART IRQ.
      * It is needed to setup TFmidi-S with some commands in polling mode.
-     Must return 0 in case of success. */
+     * Must return 0 in case of success. If you don't use irq\dma just make stub function */
     int (*start_dma_or_irq_operations)(void);
     int (*stop_dma_or_irq_operations)(void);
 } tfminis_ll_t;
@@ -92,8 +97,11 @@ typedef struct {
     uint32_t fw_version;
     tfminis_ll_t *ll; /* Low Level functions which must be implemented by user */
     tfminis_interfaces_t interface_type;
-    tfminis_dist_t dist;
+    tfminis_dist_t dist; /* last measured data when IRQ or DMA used */
     uint16_t temperature_c; /* Degree Celsius */
+
+    /* Private variables. Don't use it directly! */
+    void *_private;
 } tfminis_dev_t;
 
 /* Fill in dev->ll with appropriate functions before call.
@@ -126,6 +134,23 @@ tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev);
 /* Don't use it if frame rate != and if UART IRQ or DMA are used.
  * If ret value = TFMINIS_FAIL, check the reason via return_dist.err_reason */
 tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *return_dist);
+
+/* If you are going use UART interrupts to receive data, call this func in ISR.
+ * But is better to use DMA+idle event interrupt to reduce uart interrupt overhead.
+ * In case of using uart interrupt don't set higt frame rate.
+ * 
+ * The function will parse bytes automatically and place it in dev.
+ * The last measurement will be available with the help of tfminis_get_distance() API. 
+ * 
+ * Don't use tfminis_get_distance_oneshot() in case of IRQ */
+void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte);
+
+/* Function to call in DMA idle event interrupt
+ * The function will parse data automatically and place all in dev.
+ * The last measurement will be available with the help of tfminis_get_distance() API.
+ * 
+ * Don't use tfminis_get_distance_oneshot() in case of DMA IRQ */
+void tfminis_handle_rx_data_dma_isr(tfminis_dev_t *dev, uint8_t *rx_frame, size_t len);
 
 #ifdef __cplusplus
 }
