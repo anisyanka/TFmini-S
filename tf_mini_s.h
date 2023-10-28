@@ -32,8 +32,6 @@ extern "C" {
 typedef enum {
     TFMINIS_OK,
     TFMINIS_FAIL,
-
-    /* spectial error codes */
     TFMINIS_INTERF_ERR,
     TFMINIS_WRONG_ARGS,
     TFMINIS_WRONG_RESPONSE,
@@ -123,7 +121,7 @@ uint16_t tfminis_get_chip_temp(tfminis_dev_t *dev);
  * 0Hz means that you have to manually use tfminis_get_distance_oneshot() func by itselt to obtain distanse.
  * You must disable async data receiving (DMA or UART interrupts), because TFmini-S for now 
  * will send data onlu after triggering */
-tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev);
+tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev, uint16_t frame_rate);
 
 /* Don't use it if frame rate != and if UART IRQ or DMA are used.
  * If ret value = TFMINIS_FAIL, check the reason via return_dist.err_reason */
