@@ -45,8 +45,10 @@ typedef enum {
     TFMINIS_DATA_IS_VALID, /* everything is alright */
     TFMINIS_TOO_FAR_TARGET, /* distance more than max operating range */
     TFMINIS_TOO_CLOSE_TARGET, /* distance less than min operating range */
-    TFMINIS_AMBIENT_LIGHT_SATURATION,
+    TFMINIS_AMBIENT_LIGHT_SATURATION, /* too much ambient light */
     TFMINIS_CRC_FAILED,
+    TFMINIS_NOT_A_DATA_FRAME, /* start of frame not equal 0x59 */
+    TFMINIS_INTF_ERR, /* error during uart send/recv functions */
 } tfminis_dist_error_reason_t;
 
 typedef struct {
@@ -78,14 +80,9 @@ typedef struct {
     /* measured distance to object in cm */
     uint16_t distance_cm;
 
-    /* accuracy of the dist; ±6cm for 0.1m < range < 6m; 1% for 6m-12m */
-    uint8_t accuracy_cm;
-
-    /* 
-     * Probability that the data is correct (0-100%).
+    /* Probability that the data is correct (0-100%).
      * It depends on laser received signal strength, frame range,
-     * target reflectivity, temperature etc. 
-     */
+     * target reflectivity, temperature etc. */
     uint8_t probability;
 
     tfminis_dist_error_reason_t err_reason;
@@ -121,11 +118,14 @@ uint16_t tfminis_get_chip_temp(tfminis_dev_t *dev);
 /* How often you want to obtain frames? (0 - 1000 Hz).
  * Remember the higher frame rate the higher interface speed required. (baudrate in case of UART)
  *
- * 0Hz means that you have to manually use tfminis_trigger_detection() func by itselt to obtain distanse.
+ * 0Hz means that you have to manually use tfminis_get_distance_oneshot() func by itselt to obtain distanse.
  * You must disable async data receiving (DMA or UART interrupts), because TFmini-S for now 
  * will send data onlu after triggering */
 tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev);
-tfminis_ret_t tfminis_trigger_detection(tfminis_dev_t *dev, tfminis_dist_t *return_dist);
+
+/* Don't use it if frame rate != and if UART IRQ or DMA are used.
+ * If ret value = TFMINIS_FAIL, check the reason via return_dist.err_reason */
+tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *return_dist);
 
 #ifdef __cplusplus
 }
