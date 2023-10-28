@@ -162,6 +162,52 @@ uint16_t tfminis_get_chip_temp(tfminis_dev_t *dev)
 
 tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev, uint16_t frame_rate)
 {
+    tfminis_ret_t ret;
+
+    uint8_t command[] = { 0x5A, 0x06, 0x03, 0x00, 0x00, 0x00 };
+    uint8_t response[sizeof(command)];
+    uint16_t temp = frame_rate;
+
+    if (frame_rate > 1000) {
+        return TFMINIS_WRONG_ARGS;
+    }
+
+    if (dev->ll->stop_dma_or_irq_operations()) {
+        return TFMINIS_INTERF_ERR;
+    }
+
+    /* Set 0Hz firstly */
+    for (int i = 0; i < 2; ++i) {
+        if (i == 0) {
+            frame_rate = 0;
+        } else {
+            frame_rate = temp;
+        }
+
+        command[3] = (uint8_t) (frame_rate & 0x00ff); /* low byte */
+        command[4] = (uint8_t) (frame_rate >> 8); /* high byte */
+        command[sizeof(command) - 1] = calc_crc(command, sizeof(command) - 1);
+
+        ret = dev->ll->uart_send(command, sizeof(command));
+        ret |= dev->ll->uart_recv(response, sizeof(response));
+        if (ret) {
+            dev->ll->start_dma_or_irq_operations();
+            return TFMINIS_INTERF_ERR;
+        }
+
+        if (memcmp(command, response, sizeof(command)) != 0) {
+            dev->ll->start_dma_or_irq_operations();
+            return TFMINIS_WRONG_RESPONSE;
+        }
+
+        dev->ll->delay_ms(5);
+    }
+
+    /* Start data obtaining in async mode */
+    if (dev->ll->start_dma_or_irq_operations()) {
+        return TFMINIS_INTERF_ERR;
+    }
+
     return TFMINIS_OK;
 }
 
