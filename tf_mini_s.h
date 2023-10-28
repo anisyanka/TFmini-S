@@ -49,7 +49,7 @@ typedef enum {
 typedef enum {
     TFMINIS_DATA_IS_VALID, /* everything is alright */
     TFMINIS_TOO_FAR_TARGET, /* distance more than max operating range */
-    TFMINIS_TOO_CLOSE_TARGET, /* distance less than min operating range */
+    TFMINIS_STRENGTH_SATURATION, /* too good reflectivity */
     TFMINIS_AMBIENT_LIGHT_SATURATION, /* too much ambient light */
     TFMINIS_CRC_FAILED,
     TFMINIS_NOT_A_DATA_FRAME, /* start of frame not equal 0x59 */
@@ -82,14 +82,8 @@ typedef struct {
 } tfminis_ll_t;
 
 typedef struct {
-    /* measured distance to object in cm */
     uint16_t distance_cm;
-
-    /* Probability that the data is correct (0-100%).
-     * It depends on laser received signal strength, frame range,
-     * target reflectivity, temperature etc. */
-    uint8_t probability;
-
+    uint16_t strength;
     tfminis_dist_error_reason_t err_reason;
 } tfminis_dist_t;
 

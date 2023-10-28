@@ -20,8 +20,6 @@
 
 #define TF_DIST_AMBIENT_SATURATION (65532U)
 
-#define TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF (655) /* 1/(100/65530) */
-
 union tf_mini_s_rxdata {
     uint8_t arr[TF_FRAME_PAYLOAD_SIZE + TF_FRAME_CRC_SIZE];
     struct {
@@ -180,7 +178,7 @@ tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *r
     dev->temperature_c = (((uint16_t)response[7] << 8 | response[6]) / 8 - 256);
 
     return_dist->distance_cm = distance;
-    return_dist->probability = 0;
+    return_dist->strength = strength;
 
     if (ret) {
         return_dist->err_reason = TFMINIS_INTF_ERR;
@@ -204,21 +202,19 @@ tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *r
         return TFMINIS_FAIL;
     }
 
-    /* distance less than min operating range */
+    /* too good reflectivity */
     if (distance == TF_DIST_TARGET_TOO_CLOSE && strength == TF_STRENGHT_TARGET_TOO_CLOSE) {
-        return_dist->err_reason = TFMINIS_TOO_CLOSE_TARGET;
+        return_dist->err_reason = TFMINIS_STRENGTH_SATURATION;
         return TFMINIS_FAIL;
     }
 
     /* too much ambient light */
     if (distance == TF_DIST_AMBIENT_SATURATION) {
-        return_dist->err_reason = TFMINIS_TOO_CLOSE_TARGET;
+        return_dist->err_reason = TFMINIS_STRENGTH_SATURATION;
         return TFMINIS_FAIL;
     }
 
     return_dist->err_reason = TFMINIS_DATA_IS_VALID;
-    return_dist->probability = (strength / TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF) + 1;
-
     return TFMINIS_OK;
 }
 
@@ -236,7 +232,7 @@ typedef enum {
 static void fill_dist_data_based(tfminis_dev_t *dev, uint16_t distance, uint16_t strength)
 {
     dev->dist.distance_cm = distance;
-    dev->dist.probability = 0;
+    dev->dist.strength = strength;
 
     /* distance more than max operating range */
     if (distance == TF_DIST_TARGET_TOO_FAR && strength < TF_STRENGHT_TARGET_TOO_FAR) {
@@ -246,18 +242,17 @@ static void fill_dist_data_based(tfminis_dev_t *dev, uint16_t distance, uint16_t
 
     /* distance less than min operating range */
     if (distance == TF_DIST_TARGET_TOO_CLOSE && strength == TF_STRENGHT_TARGET_TOO_CLOSE) {
-        dev->dist.err_reason = TFMINIS_TOO_CLOSE_TARGET;
+        dev->dist.err_reason = TFMINIS_STRENGTH_SATURATION;
         return;
     }
 
     /* too much ambient light */
     if (distance == TF_DIST_AMBIENT_SATURATION) {
-        dev->dist.err_reason = TFMINIS_TOO_CLOSE_TARGET;
+        dev->dist.err_reason = TFMINIS_STRENGTH_SATURATION;
         return;
     }
 
     dev->dist.err_reason = TFMINIS_DATA_IS_VALID;
-    dev->dist.probability = (strength / TF_STRENGHT_PROB_CONVERTION_RANGE_COEFF) + 1;
 }
 
 void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
@@ -327,7 +322,6 @@ void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
         rxdata.arr[cur_byte_idx++] = byte;
         if (crc != byte) {
             dev->dist.err_reason = TFMINIS_CRC_FAILED;
-            dev->dist.probability = 0;
         }
         break;
     default:
