@@ -77,6 +77,13 @@ typedef struct {
      * Must return 0 in case of success. If you don't use irq\dma just make stub function */
     int (*start_dma_or_irq_operations)(void);
     int (*stop_dma_or_irq_operations)(void);
+
+    /* When data frame has been received via UART IRQ or DMA idle event IRQ
+     * this callback will be called. If not used set it to NULL.
+     * Remember that it will be called in uart byte received interrupt (in case of using UART IRQ)
+     * or in DMA idle event received interrupt (in case of using DMA IDLE interrupt).
+     * It is supposed to be used to immediately put new data to some RTOS queue to wake up waiting RTOS task */
+    void (*data_avaliabe_isr_cb)(void);
 } tfminis_ll_t;
 
 typedef struct {

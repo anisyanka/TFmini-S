@@ -396,6 +396,10 @@ void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
 
     /* Obtained whole frame or prevent rx buffer overflow in case of broken frames */
     if (cur_byte_idx > sizeof(rxdata.arr) - 1) {
+        if (dev->ll->data_avaliabe_isr_cb) { /* if not null */
+            dev->ll->data_avaliabe_isr_cb();
+        }
+
         crc = 0;
         cur_byte_idx = 0;
         sof_cnt = 0;
