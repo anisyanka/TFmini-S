@@ -358,7 +358,7 @@ static void fill_dist_data_based(tfminis_dev_t *dev, uint16_t distance, uint16_t
     dev->dist.err_reason = TFMINIS_DATA_IS_VALID;
 }
 
-void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
+static void tfminis_data_parser(tfminis_dev_t *dev, uint8_t byte)
 {
     /* get local private struct */
     _private_tfnminis_data_t *_private_d = (_private_tfnminis_data_t *)dev->_private;
@@ -438,5 +438,17 @@ void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
         _private_d->cur_byte_idx = 0;
         _private_d->sof_cnt = 0;
         _private_d->parser_state = WAIT_FOR_SOF;
+    }
+}
+
+void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
+{
+    tfminis_data_parser(dev, byte);
+}
+
+void tfminis_handle_rx_data_dma_isr(tfminis_dev_t *dev, uint8_t *rx_frame, size_t len)
+{
+    for (int i = 0; i < len; ++i) {
+        tfminis_data_parser(dev, rx_frame[i]);
     }
 }

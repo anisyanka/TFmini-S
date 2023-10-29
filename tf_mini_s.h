@@ -140,13 +140,17 @@ tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *r
  * 
  * The function will parse bytes automatically and place it in dev.
  * The last measurement will be available with the help of tfminis_get_distance() API. 
- * 
+ *
+ * Also if frame is valid dev->ll->data_avaliabe_isr_cb() callback will be called. (if defined)
+ *
  * Don't use tfminis_get_distance_oneshot() in case of IRQ */
 void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte);
 
 /* Function to call in DMA idle event interrupt
  * The function will parse data automatically and place all in dev.
  * The last measurement will be available with the help of tfminis_get_distance() API.
+ *
+ * Also if frame is valid dev->ll->data_avaliabe_isr_cb() callback will be called. (if defined)
  * 
  * Don't use tfminis_get_distance_oneshot() in case of DMA IRQ */
 void tfminis_handle_rx_data_dma_isr(tfminis_dev_t *dev, uint8_t *rx_frame, size_t len);
