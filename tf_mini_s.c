@@ -10,7 +10,7 @@
 #define TF_FRAME_START_BYTE (0x59)
 #define TF_FRAME_START_BYTES_CNT (2)
 
-#define TF_COMMAND_FRAME_ATTEMPTS (3U)
+#define TF_COMMAND_OUT_DISABLE_ATTEMPTS (5U)
 
 #define TF_DIST_TARGET_TOO_FAR (65535U)
 #define TF_STRENGHT_TARGET_TOO_FAR (100U)
@@ -53,6 +53,51 @@ static uint8_t calc_crc(uint8_t *d, size_t len)
     return checksum;
 }
 
+static tfminis_ret_t disable_data_frames_output(tfminis_dev_t *dev)
+{
+    tfminis_ret_t ret;
+
+    int attempts = 0; /* try to send it several times to prevent intervention of previous data frame */
+    uint8_t command[] = { 0x5A, 0x05, 0x07, 0x00, 0x66 };
+    uint8_t response[sizeof(command)] = { 0 };
+
+    while (attempts++ < TF_COMMAND_OUT_DISABLE_ATTEMPTS) {
+        ret = dev->ll->uart_send(command, sizeof(command));
+        ret |= dev->ll->uart_recv(response, sizeof(response));
+        if (ret) {
+            return TFMINIS_INTERF_ERR;
+        } else if ((memcmp(command, response, sizeof(command)) != 0) && (attempts == TF_COMMAND_OUT_DISABLE_ATTEMPTS)) {
+            return TFMINIS_WRONG_RESPONSE;
+        } else {
+            break;
+        }
+
+        dev->ll->delay_ms(20);
+    }
+
+    return TFMINIS_OK;
+}
+
+static tfminis_ret_t enable_data_frames_output(tfminis_dev_t *dev)
+{
+    tfminis_ret_t ret;
+
+    uint8_t command[] = { 0x5A, 0x05, 0x07, 0x01, 0x67 };
+    uint8_t response[sizeof(command)] = { 0 };
+
+    ret = dev->ll->uart_send(command, sizeof(command));
+    ret |= dev->ll->uart_recv(response, sizeof(response));
+    if (ret) {
+        return TFMINIS_INTERF_ERR;
+    }
+
+    if (memcmp(command, response, sizeof(command)) != 0) {
+        return TFMINIS_WRONG_RESPONSE;
+    }
+
+    return TFMINIS_OK;
+}
+
 tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
 {
     tfminis_ret_t ret;
@@ -61,35 +106,21 @@ tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
         return TFMINIS_WRONG_ARGS;
     }
 
-    /* delay after power up to wait the sensor init process */
-    dev->ll->delay_ms(1000);
-
     /* Stop data obtaining to use polling to setup the sensor */
     if (dev->ll->stop_dma_or_irq_operations()) {
         return TFMINIS_INTERF_ERR;
     }
 
-    /* Set frame rate to 0 to stop data frames */
-    {
-        int attempts = 0; /* try to send it several times to prevent intervention of previous data frame */
-        uint8_t command[] = { 0x5A, 0x06, 0x03, 0x00, 0x00, 0x63 };
-        uint8_t response[sizeof(command)] = { 0 };
+    /* delay after power up to wait the sensor init process */
+    dev->ll->delay_ms(1000);
 
-        while (attempts++ < TF_COMMAND_FRAME_ATTEMPTS) {
-            ret = dev->ll->uart_send(command, sizeof(command));
-            ret |= dev->ll->uart_recv(response, sizeof(response));
-
-            if (ret && (attempts == TF_COMMAND_FRAME_ATTEMPTS)) {
-                return TFMINIS_INTERF_ERR;
-            } else if ((memcmp(command, response, sizeof(command)) != 0) && (attempts == TF_COMMAND_FRAME_ATTEMPTS)) {
-                return TFMINIS_WRONG_RESPONSE;
-            } else {
-                break;
-            }
-
-            dev->ll->delay_ms(20);
-        }
+    ret = disable_data_frames_output(dev);
+    if (ret != TFMINIS_OK) {
+        return ret;
     }
+
+    dev->ll->delay_ms(20);
+    dev->interface_type = interf; /* for future use */
 
     /* Get FW version */
     {
@@ -116,41 +147,9 @@ tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
         dev->fw_version = (uint32_t)response[5] | ((uint32_t)response[4] << 8) | ((uint32_t)response[3] << 16);
     }
 
-    /* Returns default frame rate according to datasheet - 100Hz */
-    {
-        uint8_t frame_rate = 100;
-        uint8_t command[] = { 0x5A, 0x06, 0x03, 0x00, 0x00, 0x00 };
-        uint8_t response[sizeof(command)];
-
-        command[3] = (uint8_t) (frame_rate & 0x00ff); /* low byte */
-        command[4] = (uint8_t) (frame_rate >> 8); /* high byte */
-        command[sizeof(command) - 1] = calc_crc(command, sizeof(command) - 1);
-
-        ret = dev->ll->uart_send(command, sizeof(command));
-        ret |= dev->ll->uart_recv(response, sizeof(response));
-        if (ret) {
-            return TFMINIS_INTERF_ERR;
-        }
-
-        if (memcmp(command, response, sizeof(command)) != 0) {
-            return TFMINIS_WRONG_RESPONSE;
-        }
-    }
-
-    /* Enable data frames output */
-    {
-        uint8_t command[] = { 0x5A, 0x05, 0x07, 0x01, 0x67 };
-        uint8_t response[sizeof(command)] = { 0 };
-
-        ret = dev->ll->uart_send(command, sizeof(command));
-        ret |= dev->ll->uart_recv(response, sizeof(response));
-        if (ret) {
-            return TFMINIS_INTERF_ERR;
-        }
-
-        if (memcmp(command, response, sizeof(command)) != 0) {
-            return TFMINIS_WRONG_RESPONSE;
-        }
+    ret = enable_data_frames_output(dev);
+    if (ret != TFMINIS_OK) {
+        return ret;
     }
 
     /* Start data obtaining in async mode */
@@ -182,7 +181,6 @@ tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev, uint16_t frame_rate)
 
     uint8_t command[] = { 0x5A, 0x06, 0x03, 0x00, 0x00, 0x00 };
     uint8_t response[sizeof(command)];
-    uint16_t temp = frame_rate;
 
     if (frame_rate > 1000) {
         return TFMINIS_WRONG_ARGS;
@@ -192,31 +190,30 @@ tfminis_ret_t tfminis_set_frame_rate(tfminis_dev_t *dev, uint16_t frame_rate)
         return TFMINIS_INTERF_ERR;
     }
 
-    /* Set 0Hz firstly */
-    for (int i = 0; i < 2; ++i) {
-        if (i == 0) {
-            frame_rate = 0;
-        } else {
-            frame_rate = temp;
-        }
+    ret = disable_data_frames_output(dev);
+    if (ret != TFMINIS_OK) {
+        return ret;
+    }
 
-        command[3] = (uint8_t) (frame_rate & 0x00ff); /* low byte */
-        command[4] = (uint8_t) (frame_rate >> 8); /* high byte */
-        command[sizeof(command) - 1] = calc_crc(command, sizeof(command) - 1);
+    command[3] = (uint8_t) (frame_rate & 0x00ff); /* low byte */
+    command[4] = (uint8_t) (frame_rate >> 8); /* high byte */
+    command[sizeof(command) - 1] = calc_crc(command, sizeof(command) - 1);
 
-        ret = dev->ll->uart_send(command, sizeof(command));
-        ret |= dev->ll->uart_recv(response, sizeof(response));
-        if (ret) {
-            dev->ll->start_dma_or_irq_operations();
-            return TFMINIS_INTERF_ERR;
-        }
+    ret = dev->ll->uart_send(command, sizeof(command));
+    ret |= dev->ll->uart_recv(response, sizeof(response));
+    if (ret) {
+        dev->ll->start_dma_or_irq_operations();
+        return TFMINIS_INTERF_ERR;
+    }
 
-        if (memcmp(command, response, sizeof(command)) != 0) {
-            dev->ll->start_dma_or_irq_operations();
-            return TFMINIS_WRONG_RESPONSE;
-        }
+    if (memcmp(command, response, sizeof(command)) != 0) {
+        dev->ll->start_dma_or_irq_operations();
+        return TFMINIS_WRONG_RESPONSE;
+    }
 
-        dev->ll->delay_ms(5);
+    ret = enable_data_frames_output(dev);
+    if (ret != TFMINIS_OK) {
+        return ret;
     }
 
     /* Start data obtaining in async mode */
