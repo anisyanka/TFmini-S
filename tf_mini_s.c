@@ -20,6 +20,17 @@
 
 #define TF_DIST_AMBIENT_SATURATION (65532U)
 
+typedef enum {
+    WAIT_FOR_SOF,
+    WAIT_FOR_DIST_L,
+    WAIT_FOR_DIST_H,
+    WAIT_FOR_STRENGTH_L,
+    WAIT_FOR_STRENGTH_H,
+    WAIT_FOR_TEMP_L,
+    WAIT_FOR_TEMP_H,
+    WAIT_FOR_CRC,
+} parser_state_t;
+
 union tf_mini_s_rxdata {
     uint8_t arr[TF_FRAME_PAYLOAD_SIZE + TF_FRAME_CRC_SIZE];
     struct {
@@ -29,6 +40,19 @@ union tf_mini_s_rxdata {
         uint8_t crc;
     } fields;
 };
+
+typedef struct {
+    void *itself;
+    union tf_mini_s_rxdata rxdata;
+    int cur_byte_idx;
+    int sof_cnt;
+    int dev_number;
+    parser_state_t parser_state;
+    uint8_t crc;
+} _private_tfnminis_data_t;
+
+static _private_tfnminis_data_t _private[TFMINIS_DEVICES_IN_SYSTEM] = { 0 };
+static int _dev_cnt = 0;
 
 static tfminis_ret_t check_args(tfminis_dev_t *dev)
 {
@@ -101,6 +125,7 @@ static tfminis_ret_t enable_data_frames_output(tfminis_dev_t *dev)
 tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
 {
     tfminis_ret_t ret;
+    int dev_exists_flag = 0;
 
     if (check_args(dev) != TFMINIS_OK) {
         return TFMINIS_WRONG_ARGS;
@@ -109,6 +134,32 @@ tfminis_ret_t tfminis_init(tfminis_dev_t *dev, tfminis_interfaces_t interf)
     /* Stop data obtaining to use polling to setup the sensor */
     if (dev->ll->stop_dma_or_irq_operations()) {
         return TFMINIS_INTERF_ERR;
+    }
+
+    /* Does local structure for this device exist? */
+    for (int i = 0; i < TFMINIS_DEVICES_IN_SYSTEM; ++i) {
+        if (_private[i].itself == dev) {
+            dev_exists_flag = 1;
+        }
+    }
+
+    /* new device */
+    if (dev_exists_flag == 0) {
+        if (_dev_cnt >= TFMINIS_DEVICES_IN_SYSTEM) {
+            /* we can't create more devices then TFMINIS_DEVICES_IN_SYSTEM. Set the parametr in your build system */
+            return TFMINIS_WRONG_ARGS;
+        }
+
+        /* Init a new private data the for new device */
+        _private[_dev_cnt].itself = dev;
+        _private[_dev_cnt].dev_number = _dev_cnt;
+        _private[_dev_cnt].cur_byte_idx = 0;
+        _private[_dev_cnt].sof_cnt = 0;
+        _private[_dev_cnt].parser_state = WAIT_FOR_SOF;
+        _private[_dev_cnt].crc = 0;
+        dev->_private = &_private[_dev_cnt];
+
+        ++_dev_cnt;
     }
 
     /* delay after power up to wait the sensor init process */
@@ -281,17 +332,6 @@ tfminis_ret_t tfminis_get_distance_oneshot(tfminis_dev_t *dev, tfminis_dist_t *r
     return TFMINIS_OK;
 }
 
-typedef enum {
-    WAIT_FOR_SOF,
-    WAIT_FOR_DIST_L,
-    WAIT_FOR_DIST_H,
-    WAIT_FOR_STRENGTH_L,
-    WAIT_FOR_STRENGTH_H,
-    WAIT_FOR_TEMP_L,
-    WAIT_FOR_TEMP_H,
-    WAIT_FOR_CRC,
-} parser_state_t;
-
 static void fill_dist_data_based(tfminis_dev_t *dev, uint16_t distance, uint16_t strength)
 {
     dev->dist.distance_cm = distance;
@@ -320,70 +360,67 @@ static void fill_dist_data_based(tfminis_dev_t *dev, uint16_t distance, uint16_t
 
 void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
 {
-    static union tf_mini_s_rxdata rxdata;
-    static int cur_byte_idx = 0;
-    static int sof_cnt = 0;
-    static parser_state_t parser_state = WAIT_FOR_SOF;
-    static uint8_t crc = 0;
+    /* get local private struct */
+    _private_tfnminis_data_t *_private_d = (_private_tfnminis_data_t *)dev->_private;
 
     /* Detect start of frame */
-    if (byte == TF_FRAME_START_BYTE && parser_state == WAIT_FOR_SOF) {
-        ++sof_cnt;
+    if (byte == TF_FRAME_START_BYTE && _private_d->parser_state == WAIT_FOR_SOF) {
+        ++_private_d->sof_cnt;
 
-        if (sof_cnt == TF_FRAME_START_BYTES_CNT) {
-            crc += TF_FRAME_START_BYTE;
-            crc += TF_FRAME_START_BYTE;
-            parser_state = WAIT_FOR_DIST_L;
+        if (_private_d->sof_cnt == TF_FRAME_START_BYTES_CNT) {
+            _private_d->crc += TF_FRAME_START_BYTE;
+            _private_d->crc += TF_FRAME_START_BYTE;
+            _private_d->parser_state = WAIT_FOR_DIST_L;
         }
         return;
     }
 
     /* If we got here we received TF_FRAME_START_BYTE one times. It means frame is broken */
-    if (sof_cnt == TF_FRAME_START_BYTES_CNT - 1) {
-        crc = 0;
-        cur_byte_idx = 0;
-        sof_cnt = 0;
-        parser_state = WAIT_FOR_SOF;
+    if (_private_d->sof_cnt == TF_FRAME_START_BYTES_CNT - 1) {
+        _private_d->crc = 0;
+        _private_d->cur_byte_idx = 0;
+        _private_d->sof_cnt = 0;
+        _private_d->parser_state = WAIT_FOR_SOF;
         return;
     }
 
     /* save usefull data */
-    switch (parser_state) {
+    switch (_private_d->parser_state) {
     case WAIT_FOR_DIST_L:
-        crc += byte;
-        rxdata.arr[cur_byte_idx++] = byte;
-        parser_state = WAIT_FOR_DIST_H;
+        _private_d->crc += byte;
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        _private_d->parser_state = WAIT_FOR_DIST_H;
         break;
     case WAIT_FOR_DIST_H:
-        crc += byte;
-        rxdata.arr[cur_byte_idx++] = byte;
-        parser_state = WAIT_FOR_STRENGTH_L;
+        _private_d->crc += byte;
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        _private_d->parser_state = WAIT_FOR_STRENGTH_L;
         break;
     case WAIT_FOR_STRENGTH_L:
-        crc += byte;
-        rxdata.arr[cur_byte_idx++] = byte;
-        parser_state = WAIT_FOR_STRENGTH_H;
+        _private_d->crc += byte;
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        _private_d->parser_state = WAIT_FOR_STRENGTH_H;
         break;
     case WAIT_FOR_STRENGTH_H:
-        crc += byte;
-        rxdata.arr[cur_byte_idx++] = byte;
-        fill_dist_data_based(dev, rxdata.fields.distance, rxdata.fields.strength);
-        parser_state = WAIT_FOR_TEMP_L;
+        _private_d->crc += byte;
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        fill_dist_data_based(dev, _private_d->rxdata.fields.distance, _private_d->rxdata.fields.strength);
+        _private_d->parser_state = WAIT_FOR_TEMP_L;
         break;
     case WAIT_FOR_TEMP_L:
-        crc += byte;
-        rxdata.arr[cur_byte_idx++] = byte;
-        parser_state = WAIT_FOR_TEMP_H;
+        _private_d->crc += byte;
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        _private_d->parser_state = WAIT_FOR_TEMP_H;
         break;
     case WAIT_FOR_TEMP_H:
-        crc += byte;
-        rxdata.arr[cur_byte_idx++] = byte;
-        dev->temperature_c = (rxdata.fields.raw_temp / 8) - 256;
-        parser_state = WAIT_FOR_CRC;
+        _private_d->crc += byte;
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        dev->temperature_c = (_private_d->rxdata.fields.raw_temp / 8) - 256;
+        _private_d->parser_state = WAIT_FOR_CRC;
         break;
     case WAIT_FOR_CRC:
-        rxdata.arr[cur_byte_idx++] = byte;
-        if (crc != byte) {
+        _private_d->rxdata.arr[_private_d->cur_byte_idx++] = byte;
+        if (_private_d->crc != byte) {
             dev->dist.err_reason = TFMINIS_CRC_FAILED;
         }
         break;
@@ -392,14 +429,14 @@ void tfminis_handle_rx_byte_uart_isr(tfminis_dev_t *dev, uint8_t byte)
     }
 
     /* Obtained whole frame or prevent rx buffer overflow in case of broken frames */
-    if (cur_byte_idx > sizeof(rxdata.arr) - 1) {
+    if (_private_d->cur_byte_idx > sizeof(_private_d->rxdata.arr) - 1) {
         if (dev->ll->data_avaliabe_isr_cb) { /* if not null */
             dev->ll->data_avaliabe_isr_cb();
         }
 
-        crc = 0;
-        cur_byte_idx = 0;
-        sof_cnt = 0;
-        parser_state = WAIT_FOR_SOF;
+        _private_d->crc = 0;
+        _private_d->cur_byte_idx = 0;
+        _private_d->sof_cnt = 0;
+        _private_d->parser_state = WAIT_FOR_SOF;
     }
 }
